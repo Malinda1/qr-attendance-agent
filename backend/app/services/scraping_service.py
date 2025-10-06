@@ -1,6 +1,6 @@
 """
 Web Scraping Service
-Handles automated attendance marking using Selenium
+Handles automated attendance marking using Selenium with final screenshot capture only
 """
 
 import time
@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 import platform
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -44,9 +44,8 @@ class ScrapingService:
         chrome_options = Options()
         
         if headless:
-           chrome_options.add_argument('--headless=new')  # Use new headless mode
+           chrome_options.add_argument('--headless=new')
         
-        # Essential options for production/Railway deployment
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
@@ -54,9 +53,8 @@ class ScrapingService:
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         chrome_options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
-        # Disable images for faster loading
+        # Allow images for screenshots
         prefs = {
-            'profile.managed_default_content_settings.images': 2,
             'profile.default_content_setting_values.notifications': 2,
         }
         chrome_options.add_experimental_option('prefs', prefs)
@@ -67,44 +65,37 @@ class ScrapingService:
             service = None
             driver_path = None
             
-            # Strategy 1: Try system chromedriver (homebrew installation)
             system_driver = shutil.which('chromedriver')
             if system_driver:
-                logger.info(f"✓ Found system chromedriver: {system_driver}")
+                logger.info(f"Found system chromedriver: {system_driver}")
                 driver_path = system_driver
             
-            # Strategy 2: Check common homebrew paths for M3 Mac
             if not driver_path:
                 homebrew_paths = [
-                    '/opt/homebrew/bin/chromedriver',  # M1/M2/M3 default
-                    '/usr/local/bin/chromedriver',      # Intel Mac
+                    '/opt/homebrew/bin/chromedriver',
+                    '/usr/local/bin/chromedriver',
                 ]
                 for path in homebrew_paths:
                     if Path(path).exists():
-                        logger.info(f"✓ Found chromedriver at: {path}")
+                        logger.info(f"Found chromedriver at: {path}")
                         driver_path = path
                         break
             
-            # Strategy 3: Use ChromeDriverManager as fallback
             if not driver_path:
                 logger.info("Using ChromeDriverManager to download driver...")
                 try:
                     downloaded_path = ChromeDriverManager().install()
                     
-                    # Fix for incorrect file selection on ARM64
                     if 'THIRD_PARTY_NOTICES' in downloaded_path or not downloaded_path.endswith('chromedriver'):
                         driver_dir = Path(downloaded_path).parent
-                        
-                        # Search for actual chromedriver executable
                         possible_drivers = list(driver_dir.glob('**/chromedriver'))
-                        # Filter out non-executables
                         possible_drivers = [p for p in possible_drivers if not any(
                             x in p.name for x in ['THIRD_PARTY', '.txt', '.html']
                         )]
                         
                         if possible_drivers:
                             driver_path = str(possible_drivers[0])
-                            logger.info(f"✓ Found correct chromedriver: {driver_path}")
+                            logger.info(f"Found correct chromedriver: {driver_path}")
                         else:
                             raise Exception("Could not find valid chromedriver executable")
                     else:
@@ -114,27 +105,21 @@ class ScrapingService:
                     logger.error(f"ChromeDriverManager failed: {str(e)}")
                     raise
             
-            # Verify the driver path is valid
             if not Path(driver_path).exists():
                 raise Exception(f"ChromeDriver not found at: {driver_path}")
             
-            # Make sure it's executable
             Path(driver_path).chmod(0o755)
-            
-            # Create service with the driver path
             service = Service(driver_path)
             
-            # Initialize driver
             logger.info(f"Initializing Chrome WebDriver with: {driver_path}")
             driver = webdriver.Chrome(service=service, options=chrome_options)
             
-            logger.info(f"✓ Chrome WebDriver initialized successfully (ARM64 optimized)")
+            logger.info(f"Chrome WebDriver initialized successfully")
             return driver
             
         except Exception as e:
             logger.error(f"Failed to initialize WebDriver: {str(e)}", exc_info=True)
             
-            # Provide helpful error message
             arch = platform.machine()
             error_msg = f"WebDriver initialization failed on {arch} architecture"
             
@@ -149,36 +134,37 @@ class ScrapingService:
     def mark_attendance(
         self,
         qr_url: str,
-        username: Optional[str] = None,
-        password: Optional[str] = None
+        username: str,
+        password: str,
+        capture_all_steps: bool = False
     ) -> Dict[str, Any]:
         """
-        Automate attendance marking process
+        Automate attendance marking process with final screenshot capture only
         
         Args:
             qr_url: QR code URL to access
-            username: NSBM login username (uses default if not provided)
-            password: NSBM login password (uses default if not provided)
+            username: NSBM login username (REQUIRED)
+            password: NSBM login password (REQUIRED)
+            capture_all_steps: Capture screenshots at each step (default: False)
             
         Returns:
-            Dictionary containing success status and screenshot path
+            Dictionary containing success status, final screenshot, and path
             
         Raises:
             Exception: If attendance marking fails
         """
         
         driver = None
-        screenshot_path = None
+        final_screenshot_path = None
         
         try:
-            # Use provided credentials or defaults
-            username = username or settings.DEFAULT_USERNAME
-            password = password or settings.DEFAULT_PASSWORD
+            # Validate credentials are provided
+            if not username or not password:
+                raise ValueError("Username and password are required for attendance marking")
             
             logger.info(f"Starting attendance marking process for URL: {qr_url}")
             logger.info(f"Using username: {username}")
             
-            # Initialize driver
             driver = self._setup_driver(headless=True)
             driver.set_page_load_timeout(30)
             
@@ -197,40 +183,73 @@ class ScrapingService:
             self._confirm_attendance(driver)
             time.sleep(3)
             
-            # Step 4: Wait for thank you page and capture screenshot
+            # Step 4: Wait for thank you page and capture ONLY final screenshot
             logger.info("Step 4: Waiting for confirmation page...")
-            screenshot_path = self._capture_confirmation(driver)
+            final_screenshot_path = self._capture_confirmation(driver)
             
-            logger.info(f"Attendance marked successfully! Screenshot: {screenshot_path}")
+            logger.info(f"Attendance marked successfully! Screenshot: {final_screenshot_path}")
             
             return {
                 "success": True,
                 "message": "Attendance marked successfully",
-                "screenshot_path": screenshot_path,
+                "screenshot_path": final_screenshot_path,
+                "screenshot_filename": Path(final_screenshot_path).name,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             
         except TimeoutException as e:
             logger.error(f"Timeout during attendance marking: {str(e)}")
-            raise Exception("Page load timeout - please check your internet connection")
+            
+            # Capture error screenshot and return it
+            error_screenshot_path = None
+            if driver:
+                error_screenshot_path = self._capture_screenshot(driver, "error_timeout")
+                logger.warning(f"Error screenshot saved: {error_screenshot_path}")
+            
+            return {
+                "success": False,
+                "message": "Page load timeout - please check your internet connection",
+                "screenshot_path": error_screenshot_path,
+                "screenshot_filename": Path(error_screenshot_path).name if error_screenshot_path else None,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
         
         except NoSuchElementException as e:
             logger.error(f"Element not found: {str(e)}")
-            raise Exception("Required element not found on page - website structure may have changed")
+            
+            # Capture error screenshot and return it
+            error_screenshot_path = None
+            if driver:
+                error_screenshot_path = self._capture_screenshot(driver, "error_element_not_found")
+                logger.warning(f"Error screenshot saved: {error_screenshot_path}")
+            
+            return {
+                "success": False,
+                "message": "Required element not found on page - website structure may have changed",
+                "screenshot_path": error_screenshot_path,
+                "screenshot_filename": Path(error_screenshot_path).name if error_screenshot_path else None,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
         
         except Exception as e:
             logger.error(f"Attendance marking failed: {str(e)}", exc_info=True)
             
-            # Try to capture error screenshot
+            # Capture error screenshot and return it
+            error_screenshot_path = None
             if driver:
                 try:
-                    error_screenshot = self.screenshot_dir / f"error_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                    driver.save_screenshot(str(error_screenshot))
-                    logger.info(f"Error screenshot saved: {error_screenshot}")
+                    error_screenshot_path = self._capture_screenshot(driver, "error_general")
+                    logger.warning(f"Error screenshot saved: {error_screenshot_path}")
                 except:
                     pass
             
-            raise Exception(f"Attendance marking failed: {str(e)}")
+            return {
+                "success": False,
+                "message": f"Attendance marking failed: {str(e)}",
+                "screenshot_path": error_screenshot_path,
+                "screenshot_filename": Path(error_screenshot_path).name if error_screenshot_path else None,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
         
         finally:
             if driver:
@@ -248,7 +267,6 @@ class ScrapingService:
         """
         
         try:
-            # Wait for username field
             username_field = WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.NAME, "username"))
             )
@@ -256,13 +274,11 @@ class ScrapingService:
             username_field.send_keys(username)
             logger.debug("Username entered")
             
-            # Enter password
             password_field = driver.find_element(By.NAME, "password")
             password_field.clear()
             password_field.send_keys(password)
             logger.debug("Password entered")
             
-            # Click login button
             login_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit'].btn.btn-primary")
             login_button.click()
             logger.info("Login button clicked")
@@ -282,7 +298,6 @@ class ScrapingService:
         """
         
         try:
-            # Wait for OK button
             ok_button = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "button.btn.btn-primary[onclick='load_win();']"))
             )
@@ -297,7 +312,7 @@ class ScrapingService:
     
     def _capture_confirmation(self, driver: webdriver.Chrome) -> str:
         """
-        Capture screenshot of thank you page
+        Capture screenshot of final confirmation/thank you page ONLY
         
         Args:
             driver: WebDriver instance
@@ -307,26 +322,55 @@ class ScrapingService:
         """
         
         try:
-            # Wait for thank you message
+            # Wait for the final "Thank you" page
             thank_you_element = WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.XPATH, "//h2[contains(text(), 'Thank you')]"))
             )
             logger.info("Thank you page detected")
             
-            # Generate screenshot filename
+            # Small delay to ensure page is fully rendered
+            time.sleep(1)
+            
+            # Generate unique filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             screenshot_filename = f"confirmation_{timestamp}.png"
             screenshot_path = self.screenshot_dir / screenshot_filename
             
-            # Capture screenshot
+            # Capture the screenshot
             driver.save_screenshot(str(screenshot_path))
-            logger.info(f"Confirmation screenshot captured: {screenshot_path}")
+            logger.info(f"Final confirmation screenshot captured: {screenshot_path}")
             
             return str(screenshot_path)
             
         except Exception as e:
             logger.error(f"Failed to capture confirmation: {str(e)}")
             raise Exception(f"Confirmation capture failed: {str(e)}")
+    
+    def _capture_screenshot(self, driver: webdriver.Chrome, step_name: str) -> str:
+        """
+        Capture screenshot at any step (used for debugging/errors)
+        
+        Args:
+            driver: WebDriver instance
+            step_name: Name/identifier for this screenshot
+            
+        Returns:
+            Path to screenshot file
+        """
+        
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            screenshot_filename = f"{step_name}_{timestamp}.png"
+            screenshot_path = self.screenshot_dir / screenshot_filename
+            
+            driver.save_screenshot(str(screenshot_path))
+            logger.info(f"Screenshot captured: {screenshot_path}")
+            
+            return str(screenshot_path)
+            
+        except Exception as e:
+            logger.warning(f"Failed to capture screenshot for {step_name}: {str(e)}")
+            return None
     
     @log_function_call
     def test_connection(self, url: str) -> bool:

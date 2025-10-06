@@ -1,23 +1,22 @@
 // ===== QR ATTENDANCE AGENT - FRONTEND APPLICATION =====
 
-// Configuration
 const CONFIG = {
     API_BASE_URL: window.location.origin,
     ENDPOINTS: {
         CONVERT_EXPIRED: '/api/convert-expired-qr',
         CREATE_EVENING: '/api/create-evening-qr',
+        MARK_ATTENDANCE: '/api/mark-attendance',
         HEALTH: '/health'
     }
 };
 
-// State Management
 const state = {
     currentMode: 'expired',
     isProcessing: false,
-    attendanceMarkingInProgress: false
+    currentQRData: null,
+    credentials: { username: null, password: null }
 };
 
-// DOM Elements
 const elements = {
     modeButtons: document.querySelectorAll('.mode-btn'),
     form: document.getElementById('qrForm'),
@@ -39,7 +38,6 @@ const elements = {
     copyBtn: document.getElementById('copyBtn')
 };
 
-// ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', () => {
     initializeApp();
     attachEventListeners();
@@ -51,30 +49,21 @@ function initializeApp() {
     updateModeUI();
 }
 
-// ===== EVENT LISTENERS =====
 function attachEventListeners() {
-    // Mode selection
     elements.modeButtons.forEach(btn => {
         btn.addEventListener('click', () => handleModeChange(btn.dataset.mode));
     });
     
-    // Form submission
     elements.form.addEventListener('submit', handleFormSubmit);
-    
-    // Copy button
     elements.copyBtn.addEventListener('click', copyToClipboard);
-    
-    // Download buttons
     elements.downloadQR.addEventListener('click', () => downloadFile(elements.downloadQR.dataset.path));
     elements.downloadScreenshot.addEventListener('click', () => downloadFile(elements.downloadScreenshot.dataset.path));
 }
 
-// ===== MODE MANAGEMENT =====
 function handleModeChange(mode) {
     if (state.isProcessing) return;
     
     state.currentMode = mode;
-    
     elements.modeButtons.forEach(btn => {
         btn.classList.toggle('active', btn.dataset.mode === mode);
     });
@@ -105,32 +94,43 @@ function updateModeUI() {
     }
 }
 
-// ===== FORM HANDLING =====
 async function handleFormSubmit(e) {
     e.preventDefault();
     
     if (state.isProcessing) return;
     
-    // Validate inputs
     const formData = {
         module_name: elements.moduleName.value.trim(),
         qr_link: elements.qrLink.value.trim(),
-        username: elements.username.value.trim() || null,
-        password: elements.password.value.trim() || null
+        username: elements.username.value.trim(),
+        password: elements.password.value.trim(),
+        auto_mark_attendance: false
     };
     
+    // Validation
     if (!formData.module_name || !formData.qr_link) {
         showStatus('Please fill in all required fields', 'error');
         return;
     }
     
-    // Validate QR link format
+    // NEW: Validate credentials
+    if (!formData.username || !formData.password) {
+        showStatus('Username and password are required', 'error');
+        return;
+    }
+    
     if (!formData.qr_link.includes('students.nsbm.ac.lk/attendence/')) {
         showStatus('Invalid NSBM QR code link format', 'error');
         return;
     }
     
-    // Process based on mode
+    // Store credentials for later use
+    state.credentials = {
+        username: formData.username,
+        password: formData.password
+    };
+    
+    
     if (state.currentMode === 'expired') {
         await processExpiredQR(formData);
     } else {
@@ -138,13 +138,12 @@ async function handleFormSubmit(e) {
     }
 }
 
-// ===== API CALLS =====
 async function processExpiredQR(data) {
     showLoading('Converting expired QR code...');
     clearResults();
     
     try {
-        showStatus('🔄 Converting QR code...', 'info');
+        showStatus('Converting QR code...', 'info');
         
         const response = await fetch(CONFIG.API_BASE_URL + CONFIG.ENDPOINTS.CONVERT_EXPIRED, {
             method: 'POST',
@@ -158,23 +157,21 @@ async function processExpiredQR(data) {
             throw new Error(result.detail || 'Conversion failed');
         }
         
-        // Phase 1 Complete - QR Code ready!
         hideLoading();
-        showStatus('✅ QR code converted successfully!', 'success');
+        showStatus('QR code converted successfully!', 'success');
         
-        // Display results immediately
+        state.currentQRData = {
+            converted_qr: result.converted_qr,
+            original_qr: result.original_qr,
+            module_name: data.module_name,
+            is_evening: false
+        };
+        
         displayResults(result);
-        
-        // Show info that attendance marking is in progress
-        showStatus('🔄 Marking attendance in background...', 'info');
-        state.attendanceMarkingInProgress = true;
-        
-        // Poll for screenshot after a delay (since it's being processed in background)
-        setTimeout(() => pollForScreenshot(result.converted_qr), 5000);
         
     } catch (error) {
         hideLoading();
-        showStatus(`❌ Error: ${error.message}`, 'error');
+        showStatus(`Error: ${error.message}`, 'error');
         console.error('Process error:', error);
     }
 }
@@ -184,13 +181,14 @@ async function processEveningQR(data) {
     clearResults();
     
     try {
-        showStatus('🔄 Creating evening QR...', 'info');
+        showStatus('Creating evening QR...', 'info');
         
         const requestData = {
             morning_qr_link: data.qr_link,
             module_name: data.module_name,
             username: data.username,
-            password: data.password
+            password: data.password,
+            auto_mark_attendance: false
         };
         
         const response = await fetch(CONFIG.API_BASE_URL + CONFIG.ENDPOINTS.CREATE_EVENING, {
@@ -205,85 +203,80 @@ async function processEveningQR(data) {
             throw new Error(result.detail || 'Evening QR creation failed');
         }
         
-        // Phase 1 Complete - Evening QR ready!
         hideLoading();
-        showStatus('✅ Evening QR code created successfully!', 'success');
+        showStatus('Evening QR code created successfully!', 'success');
         
-        // Display results immediately
+        state.currentQRData = {
+            converted_qr: result.evening_qr,
+            original_qr: result.original_qr,
+            module_name: data.module_name,
+            is_evening: true
+        };
+        
         displayResults(result);
-        
-        // Show info that attendance marking is in progress
-        showStatus('🔄 Marking attendance in background...', 'info');
-        state.attendanceMarkingInProgress = true;
-        
-        // Poll for screenshot after a delay
-        setTimeout(() => pollForScreenshot(result.evening_qr || result.converted_qr), 5000);
         
     } catch (error) {
         hideLoading();
-        showStatus(`❌ Error: ${error.message}`, 'error');
+        showStatus(`Error: ${error.message}`, 'error');
         console.error('Process error:', error);
     }
 }
 
-// ===== POLLING FOR BACKGROUND TASKS =====
-async function pollForScreenshot(qrCode, attempts = 0) {
-    const maxAttempts = 12; // Try for 1 minute (5 seconds * 12)
-    
-    if (attempts >= maxAttempts) {
-        showStatus('⚠️ Attendance marking is taking longer than expected. Check records later.', 'warning');
-        state.attendanceMarkingInProgress = false;
+async function markAttendanceManually() {
+    if (!state.currentQRData) {
+        showStatus('No QR code data available', 'error');
         return;
     }
     
+    showLoading('Marking attendance...');
+    
     try {
-        // Get today's records to check if screenshot is available
-        const response = await fetch(CONFIG.API_BASE_URL + '/api/records/today');
-        const data = await response.json();
+        showStatus('Marking attendance...', 'info');
         
-        if (data.success && data.records && data.records.length > 0) {
-            // Find the record with our QR code
-            const record = data.records.find(r => 
-                r.converted_qr_link === qrCode || 
-                r.evening_qr_link === qrCode
-            );
-            
-            if (record && record.status === 'success') {
-                // Attendance marked successfully!
-                showStatus('✅ Attendance marked successfully!', 'success');
-                state.attendanceMarkingInProgress = false;
-                
-                // Try to update screenshot display
-                updateScreenshotIfAvailable();
-                return;
-            }
+        const requestData = {
+            qr_link: state.currentQRData.converted_qr,
+            module_name: state.currentQRData.module_name,
+            original_qr: state.currentQRData.original_qr,
+            username: state.credentials.username,
+            password: state.credentials.password,
+            is_evening: state.currentQRData.is_evening
+        };
+        
+        const response = await fetch(CONFIG.API_BASE_URL + CONFIG.ENDPOINTS.MARK_ATTENDANCE, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestData)
+        });
+        
+        const result = await response.json();
+        
+        if (!response.ok) {
+            throw new Error(result.detail || 'Attendance marking failed');
         }
         
-        // Continue polling
-        setTimeout(() => pollForScreenshot(qrCode, attempts + 1), 5000);
+        hideLoading();
+        showStatus('Attendance marked successfully!', 'success');
+        
+        if (result.screenshot_path && result.screenshot_filename) {
+            displayScreenshot(result.screenshot_path, result.screenshot_filename);
+        }
+        
+        document.getElementById('markAttendanceBtn').disabled = true;
+        document.getElementById('markAttendanceBtn').textContent = 'Attendance Marked ✓';
         
     } catch (error) {
-        console.error('Polling error:', error);
-        // Continue polling despite error
-        setTimeout(() => pollForScreenshot(qrCode, attempts + 1), 5000);
+        hideLoading();
+        showStatus(`Error: ${error.message}`, 'error');
+        console.error('Attendance marking error:', error);
     }
 }
 
-async function updateScreenshotIfAvailable() {
-    // This would need the screenshot filename from the background task
-    // For now, we'll show a message that screenshot will be available in records
-    showStatus('📸 Screenshot saved to records', 'info');
-}
-
-// ===== RESULTS DISPLAY =====
 function displayResults(result) {
     elements.resultsContainer.classList.remove('hidden');
     
-    // Display QR Code Link
     const qrLink = result.converted_qr || result.evening_qr || result.original_qr;
     elements.qrLinkOutput.value = qrLink;
     
-    // Display QR Code Image
     if (result.qr_image_path) {
         const qrImageUrl = CONFIG.API_BASE_URL + result.qr_image_path;
         elements.qrDisplay.innerHTML = `<img src="${qrImageUrl}" alt="QR Code">`;
@@ -291,24 +284,38 @@ function displayResults(result) {
         elements.downloadQR.dataset.path = result.qr_image_path;
     }
     
-    // Screenshot section - show placeholder with message
     elements.screenshotDisplay.innerHTML = `
         <div class="screenshot-placeholder">
             <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-                <circle cx="12" cy="12" r="10"/>
-                <path d="M12 6v6l4 2"/>
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <path d="M21 15l-5-5L5 21"/>
             </svg>
-            <p>Marking attendance...</p>
-            <p style="font-size: 0.8rem; color: var(--text-muted);">Screenshot will appear here</p>
+            <p>Click "Mark Attendance" to capture screenshot</p>
         </div>
+        <button class="download-btn" id="markAttendanceBtn" style="margin-top: 1rem;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                <polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+            Mark Attendance
+        </button>
     `;
     
-    // Show summary
-    const summary = state.currentMode === 'expired' 
-        ? `Original: ${result.original_qr}\nConverted: ${result.converted_qr}`
-        : `Morning: ${result.original_qr}\nEvening: ${result.evening_qr}`;
+    document.getElementById('markAttendanceBtn').addEventListener('click', markAttendanceManually);
+}
+
+function displayScreenshot(screenshotPath, filename) {
+    const screenshotUrl = CONFIG.API_BASE_URL + screenshotPath;
     
-    console.log('Phase 1 complete - QR Ready:', summary);
+    elements.screenshotDisplay.innerHTML = `
+        <img src="${screenshotUrl}" alt="Confirmation Screenshot" style="max-width: 100%; border-radius: 8px;">
+    `;
+    
+    elements.downloadScreenshot.style.display = 'flex';
+    elements.downloadScreenshot.dataset.path = screenshotPath;
+    
+    showStatus('Screenshot captured successfully!', 'success');
 }
 
 function clearResults() {
@@ -337,9 +344,9 @@ function clearResults() {
     `;
     elements.downloadQR.style.display = 'none';
     elements.downloadScreenshot.style.display = 'none';
+    state.currentQRData = null;
 }
 
-// ===== STATUS MESSAGES =====
 function showStatus(message, type = 'info') {
     const statusDiv = document.createElement('div');
     statusDiv.className = `status-message ${type}`;
@@ -347,20 +354,17 @@ function showStatus(message, type = 'info') {
     
     elements.statusMessages.appendChild(statusDiv);
     
-    // Auto-remove after 5 seconds
     setTimeout(() => {
         statusDiv.style.opacity = '0';
         setTimeout(() => statusDiv.remove(), 300);
     }, 5000);
     
-    // Keep only last 5 messages
     const messages = elements.statusMessages.children;
     while (messages.length > 5) {
         messages[0].remove();
     }
 }
 
-// ===== LOADING OVERLAY =====
 function showLoading(text) {
     state.isProcessing = true;
     elements.loadingOverlay.classList.remove('hidden');
@@ -374,19 +378,13 @@ function hideLoading() {
     elements.submitBtn.disabled = false;
 }
 
-function updateLoadingText(text) {
-    elements.loadingSubtext.textContent = text;
-}
-
-// ===== UTILITIES =====
 async function copyToClipboard() {
     const text = elements.qrLinkOutput.value;
     
     try {
         await navigator.clipboard.writeText(text);
-        showStatus('✅ Link copied to clipboard!', 'success');
+        showStatus('Link copied to clipboard!', 'success');
         
-        // Visual feedback
         elements.copyBtn.innerHTML = `
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="20 6 9 17 4 12"/>
@@ -402,7 +400,7 @@ async function copyToClipboard() {
             `;
         }, 2000);
     } catch (error) {
-        showStatus('❌ Failed to copy to clipboard', 'error');
+        showStatus('Failed to copy to clipboard', 'error');
     }
 }
 
@@ -423,14 +421,10 @@ async function checkHealth() {
     }
 }
 
-function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// ===== EXPORT FOR TESTING =====
 window.QRAttendanceApp = {
     state,
     CONFIG,
     processExpiredQR,
-    processEveningQR
+    processEveningQR,
+    markAttendanceManually
 };

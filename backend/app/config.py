@@ -34,8 +34,8 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     
     # Default NSBM Credentials
-    DEFAULT_USERNAME: str
-    DEFAULT_PASSWORD: str
+    #DEFAULT_USERNAME: str
+    #DEFAULT_PASSWORD: str
     
     # Directory Configuration
     QR_CODE_DIR: Path = BASE_DIR / "qr_codes"

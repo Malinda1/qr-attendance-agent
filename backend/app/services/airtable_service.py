@@ -26,7 +26,7 @@ class AirtableService:
         original_qr: str,
         converted_qr: Optional[str] = None,
         evening_qr: Optional[str] = None,
-        status: str = "success"
+        status: str = "success"  # Keep parameter for backward compatibility
     ) -> str:
         """
         Create a new record in Airtable
@@ -36,7 +36,7 @@ class AirtableService:
             original_qr: Original QR code link
             converted_qr: Converted QR code link (optional)
             evening_qr: Evening session QR code link (optional)
-            status: Status of the operation
+            status: Status of the operation (ignored if field doesn't exist)
             
         Returns:
             Record ID from Airtable
@@ -49,24 +49,44 @@ class AirtableService:
             current_date = datetime.now().strftime("%Y-%m-%d")
             current_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
+            # Build record data with only existing fields
             record_data = {
                 "Module Name": module_name,
                 "Original QR Link": original_qr,
                 "Date": current_date,
-                "Timestamp": current_timestamp,
-                "Status": status
+                "Timestamp": current_timestamp
             }
             
+            # Only add optional fields if they have values
             if converted_qr:
                 record_data["Converted QR Link"] = converted_qr
             
             if evening_qr:
                 record_data["Evening QR Link"] = evening_qr
             
-            logger.info(f"Creating Airtable record for module: {module_name}")
-            logger.debug(f"Record data: {record_data}")
+            # Try to add Status field if it exists
+            # If it doesn't exist in Airtable, this won't cause an error
+            # because we're handling it gracefully
+            try:
+                # First attempt with Status field
+                test_data = record_data.copy()
+                test_data["Status"] = status
+                
+                logger.info(f"Creating Airtable record for module: {module_name}")
+                logger.debug(f"Record data: {test_data}")
+                
+                record = self.table.create(test_data)
+                
+            except Exception as status_error:
+                if "UNKNOWN_FIELD_NAME" in str(status_error) and "Status" in str(status_error):
+                    # Status field doesn't exist, retry without it
+                    logger.warning("Status field not found in Airtable, creating record without it")
+                    logger.debug(f"Record data (without Status): {record_data}")
+                    record = self.table.create(record_data)
+                else:
+                    # Different error, re-raise it
+                    raise
             
-            record = self.table.create(record_data)
             record_id = record['id']
             
             logger.info(f"Airtable record created successfully - ID: {record_id}")

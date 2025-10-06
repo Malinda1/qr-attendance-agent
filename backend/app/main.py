@@ -140,7 +140,9 @@ if (frontend_dir / "css").exists():
 if (frontend_dir / "js").exists():
     app.mount("/static/js", StaticFiles(directory=str(frontend_dir / "js")), name="js")
     logger.info(f"✓ JS mounted from: {frontend_dir / 'js'}")
-
+# Mount screenshots directory for serving images
+app.mount("/screenshots", StaticFiles(directory=str(settings.SCREENSHOT_DIR)), name="screenshots")
+logger.info(f"✓ Screenshots mounted from: {settings.SCREENSHOT_DIR}")
 
 # Serve frontend HTML at root
 @app.get("/", response_class=HTMLResponse)
