@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # Airtable Configuration
     AIRTABLE_API_KEY: str
     AIRTABLE_BASE_ID: str
-    AIRTABLE_TABLE_NAME: str = "QR_Attendance"
+    AIRTABLE_TABLE_NAME: str = "tblZvUKVz1tW0MTvA"
     
     # Application Configuration
     APP_HOST: str = "0.0.0.0"
