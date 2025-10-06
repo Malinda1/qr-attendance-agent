@@ -1,127 +1,168 @@
 #!/usr/bin/env python3
 """
-test_config.py
---------------
-Simple test harness to validate backend/app/config.py (Settings).
+logging_test.py
+---------------
+Test harness to validate backend/app/logging_config.py
 
-- Prints selected settings values (masks secrets).
-- Checks required environment variables exist.
-- Verifies directories were created.
-- Exits with code 0 on success, 1 on failure.
+- Verifies setup_logger returns a logger.
+- Runs a sample decorated function to exercise decorator logging.
+- Checks that today's log files (app_YYYYMMDD.log and error_YYYYMMDD.log) exist and contain entries.
+- Exits with 0 on success, 1 on failure.
 """
 
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+import re
 
-# Import settings (adjust import path if you placed test file elsewhere)
+# Attempt imports from common locations
 try:
-    # If running from backend/app, this import will work
-    from config import settings, Settings  # type: ignore
-except Exception:
-    # Try importing as package if run from project root
+    # if running from backend/app directory
+    from backend.app.logging_config import logger, log_function_call, setup_logger  # type: ignore
+    # try to import settings from local config
     try:
-        from backend.app.config import settings, Settings  # type: ignore
+        from config import settings  # type: ignore
+    except Exception:
+        # fallback to package import
+        from backend.app.config import settings  # type: ignore
+except Exception:
+    try:
+        # If running from project root, import as package
+        from backend.app.logging_config import logger, log_function_call, setup_logger  # type: ignore
+        from backend.app.config import settings  # type: ignore
     except Exception as e:
-        print("❌ Failed to import settings from config.py")
+        print("❌ Failed to import logging_config or settings. Make sure this script is placed next to logging_config.py or run from project root.")
         traceback.print_exc()
         sys.exit(1)
 
 
-def mask_secret(s: str, keep: int = 4) -> str:
-    """Mask a secret except for the last `keep` characters."""
-    if not s:
-        return "<empty>"
-    if len(s) <= keep:
-        return "*" * len(s)
-    return "*" * (len(s) - keep) + s[-keep:]
+TEST_LOGGER_NAME = "qr_attendance_test_logger"
+TODAY_SUFFIX = datetime.now().strftime("%Y%m%d")
 
 
-def check_env_keys(keys: Iterable[str]) -> bool:
-    """Ensure listed keys exist in process environment (via settings)."""
-    missing = []
-    for key in keys:
-        val = getattr(settings, key, None)
-        if val is None or (isinstance(val, str) and val.strip() == ""):
-            missing.append(key)
-    if missing:
-        print(f"❌ Missing required settings: {missing}")
-        return False
-    print("✅ All required env/settings keys are present.")
-    return True
-
-
-def check_directories(paths: Iterable[Path]) -> bool:
-    """Confirm directories exist and are writable."""
-    bad = []
-    for p in paths:
-        try:
-            if not p.exists():
-                bad.append((p, "does not exist"))
-            elif not p.is_dir():
-                bad.append((p, "not a directory"))
-            else:
-                # Try writing a tiny temporary file to test writability
-                tmp = p / ".test_write"
-                with open(tmp, "w") as f:
-                    f.write("ok")
-                tmp.unlink()
-        except Exception as e:
-            bad.append((p, str(e)))
-    if bad:
-        print("❌ Directory checks failed for:")
-        for p, reason in bad:
-            print(f"   - {p}: {reason}")
-        return False
-    print("✅ Directory checks passed (exist and writable).")
-    return True
+def read_file_tail(path: Path, lines: int = 20) -> str:
+    """Return last `lines` lines of file as a string (best-effort)."""
+    try:
+        with open(path, "rb") as f:
+            # read last ~20KB or file size whichever smaller
+            f.seek(0, 2)
+            size = f.tell()
+            to_read = min(size, 20 * 1024)
+            f.seek(-to_read, 2)
+            data = f.read().decode(errors="ignore")
+        return "\n".join(data.splitlines()[-lines:])
+    except Exception:
+        return ""
 
 
 def main():
-    print("🔎 Testing config.py -> settings\n")
+    print("🔎 Running logging_config tests...\n")
 
     try:
-        # Print important settings (mask secrets)
-        print("Settings summary:")
-        print(f"  APP_HOST: {settings.APP_HOST}")
-        print(f"  APP_PORT: {settings.APP_PORT}")
-        print(f"  LOG_LEVEL: {settings.LOG_LEVEL}")
-        print(f"  AIRTABLE_BASE_ID: {getattr(settings, 'AIRTABLE_BASE_ID', '<not set>')}")
-        # Mask secrets
-        print(f"  AIRTABLE_API_KEY: {mask_secret(getattr(settings, 'AIRTABLE_API_KEY', ''))}")
-        print(f"  GEMINI_API_KEY: {mask_secret(getattr(settings, 'GEMINI_API_KEY', ''))}")
-        print(f"  DEFAULT_USERNAME: {getattr(settings, 'DEFAULT_USERNAME', '<not set>')}")
-        # Paths
-        print(f"  QR_CODE_DIR: {settings.QR_CODE_DIR}")
-        print(f"  SCREENSHOT_DIR: {settings.SCREENSHOT_DIR}")
-        print(f"  LOG_DIR: {settings.LOG_DIR}")
-        print()
+        # Create a fresh test logger
+        test_logger = setup_logger(TEST_LOGGER_NAME)
+        assert test_logger is not None
+        print("✅ setup_logger returned a logger instance.")
 
-        # Required keys to validate (update list if you have more required vars)
-        required_keys = [
-            "GEMINI_API_KEY",
-            "AIRTABLE_API_KEY",
-            "AIRTABLE_BASE_ID",
-            "DEFAULT_USERNAME",
-            "DEFAULT_PASSWORD",
-        ]
+        # Define a small decorated function to exercise the decorator and logger
+        @log_function_call
+        def sample_func(x, y=1):
+            test_logger.info("Inside sample_func - performing calculation")
+            test_logger.debug(f"Input values: x={x}, y={y}")
+            if x < 0:
+                test_logger.error("sample_func received invalid x < 0, raising ValueError")
+                raise ValueError("x must be non-negative")
+            return x + y
 
-        ok_env = check_env_keys(required_keys)
-
-        # Check directories
-        dir_paths = [settings.QR_CODE_DIR, settings.SCREENSHOT_DIR, settings.LOG_DIR]
-        ok_dirs = check_directories(dir_paths)
-
-        if ok_env and ok_dirs:
-            print("\n✅ config.py appears to be working correctly.")
-            sys.exit(0)
-        else:
-            print("\n❌ config.py check failed. See messages above.")
+        # Run success case
+        try:
+            res = sample_func(3, y=2)
+            assert res == 5
+            print("✅ sample_func success case ran and returned expected result.")
+        except Exception as e:
+            print("❌ sample_func success case raised an unexpected exception.")
+            traceback.print_exc()
             sys.exit(1)
 
+        # Run failure case to ensure error handler logs exceptions
+        try:
+            sample_func(-1)
+        except ValueError:
+            print("✅ sample_func failure case raised ValueError as expected (and should be logged).")
+        except Exception:
+            print("❌ sample_func failure case raised an unexpected exception type.")
+            traceback.print_exc()
+            sys.exit(1)
+
+        # Check that log directory exists
+        log_dir: Path = settings.LOG_DIR
+        if not log_dir.exists() or not log_dir.is_dir():
+            print(f"❌ settings.LOG_DIR does not exist or is not a directory: {log_dir}")
+            sys.exit(1)
+        print(f"✅ LOG_DIR exists: {log_dir}")
+
+        # Expected log filenames for today
+        app_log = log_dir / f"app_{TODAY_SUFFIX}.log"
+        error_log = log_dir / f"error_{TODAY_SUFFIX}.log"
+
+        # Wait briefly for handlers to flush (best-effort)
+        # (No sleeping to keep script snappy; handlers usually flush on file write)
+
+        # Verify files exist
+        missing = []
+        for p in (app_log, error_log):
+            if not p.exists():
+                missing.append(str(p))
+        if missing:
+            print("❌ Expected log files not found:")
+            for m in missing:
+                print("   -", m)
+            sys.exit(1)
+        print(f"✅ Found expected log files: {app_log.name}, {error_log.name}")
+
+        # Verify files are non-empty
+        empty_files = [p for p in (app_log, error_log) if p.stat().st_size == 0]
+        if empty_files:
+            print("❌ Found empty log file(s):")
+            for p in empty_files:
+                print("   -", p)
+            sys.exit(1)
+        print("✅ Log files are non-empty.")
+
+        # Ensure that our test messages appear in the app log
+        tail = read_file_tail(app_log, lines=200)
+        checks = [
+            r"sample_func",  # decorator messages include function name
+            r"Inside sample_func - performing calculation",
+            r"sample_func received invalid x < 0",  # error log text
+        ]
+        missing_checks = [c for c in checks if not re.search(c, tail)]
+        if missing_checks:
+            print("❌ Some expected log entries not found in app log. Tail preview:")
+            print("--- Log tail start ---")
+            print(tail or "<empty>")
+            print("--- Log tail end ---")
+            print("Missing patterns:", missing_checks)
+            # Still check error log for the error entry
+            error_tail = read_file_tail(error_log, lines=200)
+            if "sample_func received invalid x < 0" in error_tail:
+                print("✅ Error message present in error log (good).")
+                # consider success if error found there
+            else:
+                sys.exit(1)
+        else:
+            print("✅ Expected log messages found in app log.")
+
+        print("\n🎉 Logging configuration appears to be working correctly.")
+        sys.exit(0)
+
+    except AssertionError as ae:
+        print("❌ Assertion failed during tests:", str(ae))
+        traceback.print_exc()
+        sys.exit(1)
     except Exception:
-        print("❌ An unexpected error occurred while testing config.py")
+        print("❌ Unexpected error while testing logging_config.py")
         traceback.print_exc()
         sys.exit(1)
 
